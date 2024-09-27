@@ -62,6 +62,7 @@ def video_feed(camera_index):
     # Chuyển tiếp luồng video tới client
     return Response(generate_frames(camera_index),
                     mimetype='multipart/x-mixed-replace; boundary=frame')
+    
 
 @app.route('/video_feed/')
 def video_feed_():
