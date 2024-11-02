@@ -8,8 +8,6 @@ import random
 
 app = Flask(__name__)
 
-INSTANCE_PORT = random.randint(8562, 65535)
-
 
 def get_local_ip():
     """Lấy địa chỉ IP mạng cục bộ, loại trừ localhost"""
@@ -25,38 +23,45 @@ def get_local_ip():
 
 
 def send_ip_port_on_startup():
-    # Lấy IP cục bộ chính xác
     server_ip = get_local_ip()
-    print(f"Server IP: {server_ip}, Port: {INSTANCE_PORT}")
-    # Headers và API URL
     headers = {
         "Content-Type": "application/json",
-        "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0YWJsZU5hbWUiOiJI4bqhdCDEkWnhu4F1fn4yIiwiaWF0IjoxNzI5MjQ2NzE5LCJleHAiOjMzMjU1Mjg5MTE5fQ.jUUk-Cu5INZfXah7in-L1PMt9_IG_5xoCogbJaG49Uc",
+        "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0YWJsZU5hbWUiOiJSYXR-fjIiLCJpYXQiOjE3Mjk1MDE3NDcsImV4cCI6MzMyNTU1NDQxNDd9.YKBs0-2bZxJxUvuBIK8XaEqDd6pcLVuumMzf-hqpl7k",
     }
-    api_url = "http://117.3.0.23:8543/api/auth-db/ip_port/script"
-    data = {"ip_port": f"{server_ip}:{INSTANCE_PORT}"}
+    api_url = "http://117.3.0.23:8543/api/auth-db/camera_url/script"
     try:
-        response = requests.post(api_url, headers=headers, json=data)
-        print(f"API response: {response.status_code} - {response.text}")
+        response = requests.get(api_url, headers=headers)
+        if response.status_code == 200 and response.text:
+            port = response.text.split(":")[1]
+            print(f"Using port from database: {port}")
+        else:
+            port = random.randint(8562, 65535)
+            print(f"No data found in database. Random port: {port}")
+            data = {"url": f"{server_ip}:{port}"}
+            try:
+                post_response = requests.post(api_url, headers=headers, json=data)
+                print(
+                    f"API response on POST: {post_response.status_code} - {post_response.text}"
+                )
+            except requests.exceptions.RequestException as e:
+                print(f"Error sending data to API: {e}")
     except requests.exceptions.RequestException as e:
-        print(f"Error sending data to API: {e}")
+        print(f"Error checking data in API: {e}")
+
+    return port
 
 
-send_ip_port_on_startup()
-
-
-output_frames = {}  # Lưu frame cuối cùng đã đọc từ camera
-frame_threads = {}  # Threads cho mỗi camera
+output_frames = {}
+frame_threads = {}
 resolution_map = {
-    "360": (640, 360),  # 360p
-    "480": (854, 480),  # 480p
-    "720": (1280, 720),  # 720p
-    "1080": (1920, 1080),  # 1080p
+    "360": (640, 360),
+    "480": (854, 480),
+    "720": (1280, 720),
+    "1080": (1920, 1080),
 }
 
 
 def capture_camera(camera_index):
-    """Chức năng này sẽ đọc frame từ camera và lưu trữ nó để chuyển tiếp."""
     global output_frames
     cap = cv2.VideoCapture(camera_index)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
@@ -71,29 +76,19 @@ def capture_camera(camera_index):
             print(f"Warning: Unable to read frame from camera {camera_index}")
             time.sleep(0.1)
             continue
+        output_frames[camera_index] = frame
 
-        # Lưu frame gốc để mã hóa
-        output_frames[camera_index] = frame  # Lưu frame chưa thay đổi kích thước
-
-        time.sleep(0.01)  # Điều chỉnh tốc độ đọc frame để tránh quá tải CPU
+        time.sleep(0.01)
 
     cap.release()
 
 
 def generate_frames(camera_index, quality):
-    """Chuyển tiếp các frame từ buffer tới client với kích thước đã thay đổi."""
     while True:
         frame = output_frames.get(camera_index)
         if frame is not None:
-            # Thay đổi kích thước khung hình
-            resolution = resolution_map.get(
-                quality, resolution_map["720"]
-            )  # Mặc định là 720p
-            resized_frame = cv2.resize(
-                frame, resolution
-            )  # Thay đổi kích thước khung hình
-
-            # Mã hóa frame đã thay đổi kích thước thành JPEG
+            resolution = resolution_map.get(quality, resolution_map["720"])
+            resized_frame = cv2.resize(frame, resolution)
             _, buffer = cv2.imencode(
                 ".jpg", resized_frame, [cv2.IMWRITE_JPEG_QUALITY, 100]
             )
@@ -116,8 +111,6 @@ def video_feed(camera_index, quality):
         )
         print(f"Starting thread for camera {camera_index}")
         frame_threads[camera_index].start()
-
-    # Chuyển tiếp luồng video tới client
     return Response(
         generate_frames(camera_index, quality),
         mimetype="multipart/x-mixed-replace; boundary=frame",
@@ -127,20 +120,11 @@ def video_feed(camera_index, quality):
 @app.route("/")
 def index():
     html = """
-    <h1>Webcam Stream</h1>
-    <p>Để xem video, hãy sử dụng định dạng sau:</p>
-    <p><code>http://<your_ip>:8543/video_feed/<camera_index>/<quality></code></p>
-    <p>Ví dụ: <code>http://<your_ip>:8543/video_feed/0/720</code></p>
-    <p>Các độ phân giải có sẵn:</p>
-    <ul>
-        <li>360p: 360</li>
-        <li>480p: 480</li>
-        <li>720p: 720</li>
-        <li>1080p: 1080</li>
-    </ul>
+    Hello world!
     """
     return render_template_string(html)
 
 
 if __name__ == "__main__":
+    INSTANCE_PORT = send_ip_port_on_startup()
     app.run(host="0.0.0.0", port=INSTANCE_PORT, debug=False)
